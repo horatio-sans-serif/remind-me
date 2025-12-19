@@ -1,0 +1,277 @@
+#!/bin/bash
+
+# remind-me - Add calendar reminders via macOS Calendar
+#
+# Usage: remind-me -m "message" -d "datetime" [-c calendar] [-t time]
+#
+# Options:
+#   -m MESSAGE   Reminder message (required)
+#   -d DATETIME  Date/time (required). Supports:
+#                  Relative: 2d, 3w, 1m, 1y (days, weeks, months, years)
+#                  Keywords: tomorrow, "next week", "next month", "next year"
+#                  Partial:  "Jan 2", "Jan 2 9am", "Dec 25"
+#                  Full:     "January 2, 2025 9:00 AM"
+#   -t TIME      Default time if not in -d (default: 9:00 AM)
+#   -c CALENDAR  Calendar name: Work, Family, Private (optional)
+#                Default: Work if cwd starts with ~/work, else Private
+#   -h           Show this help
+#
+# Examples:
+#   remind-me -m "Call mom" -d tomorrow
+#   remind-me -m "Review PR" -d 2d
+#   remind-me -m "Quarterly review" -d "next month"
+#   remind-me -m "Birthday" -d "Jan 15" -t "10:00 AM" -c Family
+#   remind-me -m "Meeting" -d "January 2, 2025 2:00 PM"
+
+set -eu
+
+usage() {
+    sed -n '3,25p' "$0" | sed 's/^# //' | sed 's/^#//'
+    exit 1
+}
+
+# Parse arguments
+CALENDAR=""
+MESSAGE=""
+DATETIME=""
+DEFAULT_TIME="9:00 AM"
+
+while getopts "c:m:d:t:h" opt; do
+    case $opt in
+        c) CALENDAR="$OPTARG" ;;
+        m) MESSAGE="$OPTARG" ;;
+        d) DATETIME="$OPTARG" ;;
+        t) DEFAULT_TIME="$OPTARG" ;;
+        h) usage ;;
+        *) usage ;;
+    esac
+done
+
+# Validate required arguments
+if [[ -z "$MESSAGE" ]]; then
+    echo "Error: -m MESSAGE is required" >&2
+    usage
+fi
+
+if [[ -z "$DATETIME" ]]; then
+    echo "Error: -d DATETIME is required" >&2
+    usage
+fi
+
+# Default calendar based on current directory (configurable via environment)
+if [[ -z "$CALENDAR" ]]; then
+    WORK_PATHS="${REMIND_ME_WORK_PATHS:-$HOME/work|$HOME/Work|$HOME/projects}"
+    if [[ "$PWD" =~ ^($WORK_PATHS) ]]; then
+        CALENDAR="Work"
+    else
+        CALENDAR="Private"
+    fi
+fi
+
+# Validate calendar name (configurable via environment)
+ALLOWED_CALENDARS="${REMIND_ME_CALENDARS:-Work|Family|Private}"
+if [[ ! "$CALENDAR" =~ ^($ALLOWED_CALENDARS)$ ]]; then
+    echo "Error: Calendar must be one of: ${ALLOWED_CALENDARS//|/, }" >&2
+    exit 1
+fi
+
+# Parse datetime using Python (more reliable than bash regex on macOS)
+# Pass variables via environment to prevent code injection
+PYTHON_STDERR=$(mktemp)
+trap "rm -f '$PYTHON_STDERR'" EXIT
+# Use || true to prevent set -e from exiting on Python failure
+PARSED_DATETIME=$(DATETIME="$DATETIME" DEFAULT_TIME="$DEFAULT_TIME" python3 2>"$PYTHON_STDERR" << 'PYEOF' || true
+import os
+import re
+import sys
+from datetime import datetime, timedelta
+import calendar
+
+input_str = os.environ.get('DATETIME', '')
+default_time = os.environ.get('DEFAULT_TIME', '9:00 AM')
+
+def add_months(dt, months):
+    """Add months to a datetime, handling year rollover and day overflow"""
+    month = dt.month + months
+    year = dt.year
+    while month > 12:
+        month -= 12
+        year += 1
+    while month < 1:
+        month += 12
+        year -= 1
+    # Handle day overflow (e.g., Jan 31 + 1 month -> Feb 28/29)
+    max_day = calendar.monthrange(year, month)[1]
+    day = min(dt.day, max_day)
+    return dt.replace(year=year, month=month, day=day)
+
+def add_years(dt, years):
+    """Add years to a datetime, handling leap year edge case"""
+    try:
+        return dt.replace(year=dt.year + years)
+    except ValueError:
+        # Feb 29 in non-leap year -> Feb 28
+        return dt.replace(year=dt.year + years, day=28)
+
+def parse_time(time_str):
+    """Parse time string like '9am', '2:30pm', '14:00' to 'H:MM AM/PM' format"""
+    time_str = time_str.strip().lower()
+
+    # Already in good format
+    if re.match(r'\d{1,2}:\d{2}\s*(am|pm)', time_str, re.I):
+        return time_str.upper()
+
+    # Format: 9am, 2pm
+    m = re.match(r'^(\d{1,2})(am|pm)$', time_str)
+    if m:
+        hour, ampm = m.groups()
+        return f"{hour}:00 {ampm.upper()}"
+
+    # Format: 9:30am, 2:30pm
+    m = re.match(r'^(\d{1,2}):(\d{2})(am|pm)$', time_str)
+    if m:
+        hour, minute, ampm = m.groups()
+        return f"{hour}:{minute} {ampm.upper()}"
+
+    # Format: 14:00 (24-hour)
+    m = re.match(r'^(\d{1,2}):(\d{2})$', time_str)
+    if m:
+        hour, minute = int(m.group(1)), m.group(2)
+        ampm = "AM" if hour < 12 else "PM"
+        if hour > 12:
+            hour -= 12
+        elif hour == 0:
+            hour = 12
+        # hour == 12 stays as 12 (noon/midnight boundary)
+        return f"{hour}:{minute} {ampm}"
+
+    return time_str
+
+def format_output(dt, time_str=None):
+    """Format datetime for AppleScript"""
+    if time_str is None:
+        time_str = default_time
+    return dt.strftime("%B %d, %Y") + " " + time_str
+
+now = datetime.now()
+result = None
+
+# Relative: Nd, Nw, Nm, Ny
+m = re.match(r'^(\d+)([dwmy])$', input_str)
+if m:
+    num, unit = int(m.group(1)), m.group(2)
+    if unit == 'd':
+        result = format_output(now + timedelta(days=num))
+    elif unit == 'w':
+        result = format_output(now + timedelta(weeks=num))
+    elif unit == 'm':
+        result = format_output(add_months(now, num))
+    elif unit == 'y':
+        result = format_output(add_years(now, num))
+
+# Keywords
+elif input_str == 'tomorrow':
+    result = format_output(now + timedelta(days=1))
+elif input_str == 'next week':
+    result = format_output(now + timedelta(weeks=1))
+elif input_str == 'next month':
+    next_month = add_months(now, 1).replace(day=1)
+    result = format_output(next_month)
+elif input_str == 'next year':
+    result = format_output(add_years(now, 1))
+
+# Partial date: "Jan 2", "Jan 2 9am", "December 25 2:30pm"
+elif not result:
+    m = re.match(r'^([A-Za-z]+)\s+(\d{1,2})(?:\s+(.+))?$', input_str)
+    if m:
+        month_str, day, time_part = m.groups()
+        day = int(day)
+
+        # Parse month
+        months = {
+            'jan': 1, 'feb': 2, 'mar': 3, 'apr': 4, 'may': 5, 'jun': 6,
+            'jul': 7, 'aug': 8, 'sep': 9, 'oct': 10, 'nov': 11, 'dec': 12,
+            'january': 1, 'february': 2, 'march': 3, 'april': 4, 'may': 5,
+            'june': 6, 'july': 7, 'august': 8, 'september': 9, 'october': 10,
+            'november': 11, 'december': 12
+        }
+        month = months.get(month_str.lower())
+
+        if month:
+            # Validate day against month
+            year = now.year
+            max_day = calendar.monthrange(year, month)[1]
+
+            # Check if day is valid for this month (consider next year for leap years)
+            if day < 1 or day > 31:
+                print(f"Error: Invalid day {day}", file=sys.stderr)
+                sys.exit(1)
+
+            if day > max_day:
+                # Try next year (might be leap year)
+                max_day_next = calendar.monthrange(year + 1, month)[1]
+                if day > max_day_next:
+                    print(f"Error: Invalid day {day} for {month_str}", file=sys.stderr)
+                    sys.exit(1)
+                year += 1
+
+            try:
+                target = datetime(year, month, day)
+                if target < now:
+                    year += 1
+                    target = datetime(year, month, day)
+            except ValueError as e:
+                print(f"Error: Invalid date - {e}", file=sys.stderr)
+                sys.exit(1)
+
+            # Parse time if provided
+            time_str = parse_time(time_part) if time_part else default_time
+            result = format_output(target, time_str)
+
+# Pass through as-is
+if not result:
+    result = input_str
+
+print(result)
+PYEOF
+)
+
+# Check if Python parsing failed
+if [[ -z "$PARSED_DATETIME" ]]; then
+    echo "Error: Failed to parse datetime '$DATETIME'" >&2
+    if [[ -s "$PYTHON_STDERR" ]]; then
+        cat "$PYTHON_STDERR" >&2
+    fi
+    exit 1
+fi
+
+# Escape MESSAGE and PARSED_DATETIME for AppleScript (prevent command injection)
+# Escape backslashes first, then double quotes
+SAFE_MESSAGE="${MESSAGE//\\/\\\\}"
+SAFE_MESSAGE="${SAFE_MESSAGE//\"/\\\"}"
+SAFE_DATETIME="${PARSED_DATETIME//\\/\\\\}"
+SAFE_DATETIME="${SAFE_DATETIME//\"/\\\"}"
+
+# Create calendar event (30 min duration, with alert)
+if ! osascript << EOF
+tell application "Calendar"
+    tell calendar "$CALENDAR"
+        set startDate to date "$SAFE_DATETIME"
+        set endDate to startDate + 30 * minutes
+        set newEvent to make new event with properties {summary:"$SAFE_MESSAGE", start date:startDate, end date:endDate}
+        tell newEvent
+            make new display alarm with properties {trigger interval:0}
+        end tell
+    end tell
+end tell
+EOF
+then
+    echo "Error: Failed to create calendar event" >&2
+    echo "Verify calendar '$CALENDAR' exists in Calendar.app" >&2
+    exit 1
+fi
+
+echo "Reminder added to $CALENDAR calendar:"
+echo "  Message:  $MESSAGE"
+echo "  When:     $PARSED_DATETIME"
+echo "  Calendar: $CALENDAR"

@@ -1,0 +1,9 @@
+{
+  "mcpServers": {
+    "remind-me": {
+      "type": "stdio",
+      "command": "node",
+      "args": ["/Users/fictorial/projects/remind-me/mcp/server.js"]
+    }
+  }
+}

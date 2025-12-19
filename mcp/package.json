@@ -1,0 +1,16 @@
+{
+  "name": "remind-me-mcp",
+  "version": "1.0.0",
+  "description": "MCP server for creating calendar reminders on macOS",
+  "type": "module",
+  "main": "server.js",
+  "bin": {
+    "remind-me-mcp": "./server.js"
+  },
+  "scripts": {
+    "start": "node server.js"
+  },
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "^1.0.0"
+  }
+}

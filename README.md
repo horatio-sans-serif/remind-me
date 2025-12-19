@@ -4,22 +4,9 @@ A macOS calendar reminder tool with flexible date parsing. Available as a shell 
 
 ## Installation
 
-### Homebrew (recommended)
-
 ```bash
 brew tap horatio-sans-serif/tools
 brew install remind-me
-```
-
-### Manual
-
-```bash
-# Clone or copy to ~/projects/remind-me
-# Symlink to your PATH
-ln -sf ~/projects/remind-me/remind-me ~/Projects/bin/remind-me
-
-# For MCP server, install dependencies
-cd ~/projects/remind-me/mcp && npm install
 ```
 
 ## Usage
@@ -115,6 +102,28 @@ Add to your Claude MCP settings or copy `.mcp.json`:
   - Only uses stdlib modules, any Python 3.x works
   - Install via Xcode Command Line Tools: `xcode-select --install`
 - Node.js (for MCP server only)
+
+## Development
+
+To work on remind-me locally:
+
+```bash
+git clone https://github.com/horatio-sans-serif/remind-me.git
+cd remind-me
+
+# Run directly from the repo
+./remind-me -m "test" -d tomorrow
+
+# Or unlink Homebrew version and add to PATH
+brew unlink remind-me
+export PATH="$PWD:$PATH"
+```
+
+For MCP server development:
+
+```bash
+cd mcp && npm install
+```
 
 ## License
 

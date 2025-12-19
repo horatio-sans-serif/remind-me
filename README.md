@@ -103,7 +103,9 @@ Add to your Claude MCP settings or copy `.mcp.json`:
 
 - macOS (uses Calendar.app via AppleScript)
 - Python 3 (for date parsing in shell script)
-- Node.js (for MCP server)
+  - Only uses stdlib modules, any Python 3.x works
+  - Install via Xcode Command Line Tools: `xcode-select --install`
+- Node.js (for MCP server only)
 
 ## License
 

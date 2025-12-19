@@ -81,6 +81,10 @@ Add to your Claude MCP settings:
 }
 ```
 
+## Limitations
+
+**Lists inside groups are not accessible.** Apple's Reminders AppleScript dictionary doesn't expose groups - they're purely a UI feature. Lists inside groups are hidden from scripting access. Move lists outside of groups to use them with remind-me.
+
 ## Requirements
 
 - macOS (uses Reminders.app via AppleScript)

@@ -11,7 +11,7 @@ import { spawn } from "child_process";
 const server = new Server(
   {
     name: "remind-me-mcp",
-    version: "1.0.0",
+    version: "2.0.0",
   },
   {
     capabilities: {
@@ -207,7 +207,7 @@ server.setRequestHandler(ListToolsRequestSchema, async () => {
       {
         name: "create_reminder",
         description:
-          "Create a calendar reminder/event on macOS Calendar app. " +
+          "Create a reminder in macOS Reminders.app with flexible date parsing. " +
           "Supports relative dates (2d, 3w, 1m, 1y), keywords (tomorrow, next week, next month, next year), " +
           "partial dates (Jan 2, Dec 25 2pm), and full dates (January 2, 2025 9:00 AM).",
         inputSchema: {
@@ -215,18 +215,21 @@ server.setRequestHandler(ListToolsRequestSchema, async () => {
           properties: {
             message: {
               type: "string",
-              description: "The reminder message/event title",
+              description: "The reminder title/message",
             },
             datetime: {
               type: "string",
               description:
-                "When to set the reminder. Examples: '1m' (1 minute), '2d' (2 days), 'tomorrow', 'next week', 'Jan 2', 'Jan 2 2pm', 'January 2, 2025 9:00 AM'",
+                "When the reminder is due. Examples: '2d' (2 days), 'tomorrow', 'next week', 'Jan 2', 'Jan 2 2pm', 'January 2, 2025 9:00 AM'",
             },
-            calendar: {
+            list: {
               type: "string",
-              description: "Calendar name (default: Private)",
-              enum: ["Work", "Family", "Private"],
-              default: "Private",
+              description: "Reminders list name (default: Reminders)",
+              default: "Reminders",
+            },
+            notes: {
+              type: "string",
+              description: "Optional notes/body text for the reminder",
             },
             default_time: {
               type: "string",
@@ -238,8 +241,8 @@ server.setRequestHandler(ListToolsRequestSchema, async () => {
         },
       },
       {
-        name: "list_calendars",
-        description: "List available calendars in macOS Calendar app",
+        name: "list_reminders_lists",
+        description: "List available lists in macOS Reminders.app",
         inputSchema: {
           type: "object",
           properties: {},
@@ -253,15 +256,15 @@ server.setRequestHandler(ListToolsRequestSchema, async () => {
 server.setRequestHandler(CallToolRequestSchema, async (request) => {
   const { name, arguments: args } = request.params;
 
-  if (name === "list_calendars") {
+  if (name === "list_reminders_lists") {
     try {
       const script = `
-        tell application "Calendar"
-          set calNames to {}
-          repeat with c in calendars
-            set end of calNames to name of c
+        tell application "Reminders"
+          set listNames to {}
+          repeat with l in lists
+            set end of listNames to name of l
           end repeat
-          return calNames
+          return listNames
         end tell
       `;
       const result = await runAppleScript(script);
@@ -269,7 +272,7 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
         content: [
           {
             type: "text",
-            text: `Available calendars: ${result}`,
+            text: `Available lists: ${result}`,
           },
         ],
       };
@@ -278,7 +281,7 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
         content: [
           {
             type: "text",
-            text: `Error listing calendars: ${error.message}`,
+            text: `Error listing reminders lists: ${error.message}`,
           },
         ],
         isError: true,
@@ -289,7 +292,8 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
   if (name === "create_reminder") {
     const message = args.message;
     const datetime = args.datetime;
-    const calendar = args.calendar || "Private";
+    const list = args.list || "Reminders";
+    const notes = args.notes || "";
     const defaultTime = args.default_time || "9:00 AM";
 
     if (!message || !datetime) {
@@ -304,48 +308,43 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
       };
     }
 
-    // Validate calendar to prevent injection
-    const VALID_CALENDARS = new Set(["Work", "Family", "Private"]);
-    if (!VALID_CALENDARS.has(calendar)) {
-      return {
-        content: [
-          {
-            type: "text",
-            text: `Error: Invalid calendar '${calendar}'. Must be one of: Work, Family, Private`,
-          },
-        ],
-        isError: true,
-      };
-    }
-
     try {
       // Parse the datetime
       const parsedDatetime = parseDateTime(datetime, defaultTime);
 
-      // Escape message for AppleScript
+      // Escape strings for AppleScript
       const safeMessage = message.replace(/\\/g, "\\\\").replace(/"/g, '\\"');
+      const safeList = list.replace(/\\/g, "\\\\").replace(/"/g, '\\"');
+      const safeNotes = notes.replace(/\\/g, "\\\\").replace(/"/g, '\\"');
 
-      // Create the event
+      // Build properties
+      let props = `name:"${safeMessage}", due date:dueDate`;
+      if (notes) {
+        props += `, body:"${safeNotes}"`;
+      }
+
+      // Create the reminder
       const script = `
-        tell application "Calendar"
-          tell calendar "${calendar}"
-            set startDate to date "${parsedDatetime}"
-            set endDate to startDate + 30 * minutes
-            set newEvent to make new event with properties {summary:"${safeMessage}", start date:startDate, end date:endDate}
-            tell newEvent
-              make new display alarm with properties {trigger interval:0}
-            end tell
+        tell application "Reminders"
+          tell list "${safeList}"
+            set dueDate to date "${parsedDatetime}"
+            make new reminder with properties {${props}}
           end tell
         end tell
       `;
 
       await runAppleScript(script);
 
+      let resultText = `Reminder created:\n  Message: ${message}\n  Due: ${parsedDatetime}\n  List: ${list}`;
+      if (notes) {
+        resultText += `\n  Notes: ${notes}`;
+      }
+
       return {
         content: [
           {
             type: "text",
-            text: `Reminder created successfully:\n  Message: ${message}\n  When: ${parsedDatetime}\n  Calendar: ${calendar}`,
+            text: resultText,
           },
         ],
       };
@@ -354,7 +353,7 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
         content: [
           {
             type: "text",
-            text: `Error creating reminder: ${error.message}\nVerify calendar '${calendar}' exists in Calendar.app`,
+            text: `Error creating reminder: ${error.message}\nVerify list '${list}' exists in Reminders.app`,
           },
         ],
         isError: true,

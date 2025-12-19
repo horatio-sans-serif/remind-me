@@ -4,6 +4,15 @@ A macOS calendar reminder tool with flexible date parsing. Available as a shell 
 
 ## Installation
 
+### Homebrew (recommended)
+
+```bash
+brew tap horatio-sans-serif/tools
+brew install remind-me
+```
+
+### Manual
+
 ```bash
 # Clone or copy to ~/projects/remind-me
 # Symlink to your PATH
